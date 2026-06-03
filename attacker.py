@@ -10,7 +10,7 @@ LOG_DIR = "logs"
 os.makedirs(LOG_DIR, exist_ok=True)
 
 victims = {}
-HEARTBEAT_TIMEOUT = 60
+HEARTBEAT_TIMEOUT = 20
 
 # --- ANSI Color Codes ---
 class C:

