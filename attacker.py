@@ -346,4 +346,4 @@ def serve_bin(filename):
 
 if __name__ == "__main__":
     Log.server_start()
-    app.run(host="0.0.0.0", port=8443, ssl_context="adhoc")
+    app.run(host="0.0.0.0", port=8443)
